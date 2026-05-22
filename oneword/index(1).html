@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>one.word — single-word location addressing</title>
+  <meta name="description" content="Every 1.2km square on Earth, addressed by a single word." />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f5f5f3;
+      --text-primary: #1a1a18;
+      --text-secondary: #6b6b67;
+      --border-light: rgba(0,0,0,0.12);
+      --border-mid: rgba(0,0,0,0.22);
+      --green: #1D9E75;
+      --green-dark: #0F6E56;
+      --green-light: #E1F5EE;
+      --green-border: #9FE1CB;
+      --red: #E24B4A;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --topbar-h: 52px;
+      --panel-h: 300px; /* desktop panel not used on mobile */
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-primary: #1c1c1a;
+        --bg-secondary: #252523;
+        --text-primary: #f0efe8;
+        --text-secondary: #9a9a94;
+        --border-light: rgba(255,255,255,0.1);
+        --border-mid: rgba(255,255,255,0.2);
+        --green-light: #0d3d2b;
+        --green-border: #0F6E56;
+      }
+    }
+
+    html, body {
+      height: 100%; overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-primary); color: var(--text-primary);
+    }
+
+    /* ── TOPBAR ── */
+    #topbar {
+      position: fixed; top: 0; left: 0; right: 0; height: var(--topbar-h);
+      padding: 0 12px; display: flex; align-items: center; gap: 8px;
+      background: var(--bg-primary); border-bottom: 0.5px solid var(--border-light);
+      z-index: 600;
+    }
+    #logo {
+      font-size: 17px; font-weight: 700; letter-spacing: -0.4px;
+      color: var(--text-primary); display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+    }
+    #logo .dot { color: var(--green); }
+    #logo i { color: var(--green); font-size: 18px; }
+    #search-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+    #search-wrap i { position: absolute; left: 9px; font-size: 14px; color: var(--text-secondary); pointer-events: none; }
+    #searchInput {
+      width: 100%; padding: 7px 8px 7px 28px;
+      border: 0.5px solid var(--border-mid); border-radius: var(--radius-md);
+      font-size: 13px; background: var(--bg-secondary); color: var(--text-primary);
+      -webkit-appearance: none;
+    }
+    #searchInput:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 2px rgba(29,158,117,0.18); }
+    #searchInput.error { border-color: var(--red); }
+    #locate-btn {
+      padding: 7px 10px; font-size: 12px; font-weight: 600;
+      background: var(--green); color: #fff; border: none; border-radius: var(--radius-md);
+      cursor: pointer; display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+      white-space: nowrap;
+    }
+    #locate-btn:active { background: var(--green-dark); }
+    /* hide label text on very small screens */
+    @media (max-width: 380px) { #locate-label { display: none; } }
+
+    /* ── MAP ── */
+    #map {
+      position: fixed;
+      top: var(--topbar-h);
+      left: 0; right: 0;
+      /* bottom adjusted by JS on mobile when panel is open */
+      bottom: 0;
+      z-index: 1;
+      transition: bottom 0.3s ease;
+    }
+
+    /* ── TOAST ── */
+    #copied-toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: var(--green-dark); color: #fff; padding: 8px 16px;
+      border-radius: var(--radius-md); font-size: 13px; font-weight: 500;
+      opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 700;
+      white-space: nowrap;
+    }
+    #copied-toast.show { opacity: 1; }
+
+    /* ── DESKTOP SIDE PANEL ── */
+    #panel {
+      position: fixed;
+      top: var(--topbar-h); right: 0; bottom: 0;
+      width: 280px;
+      background: var(--bg-primary);
+      border-left: 0.5px solid var(--border-light);
+      display: flex; flex-direction: column;
+      z-index: 500;
+    }
+
+    /* ── MOBILE BOTTOM SHEET ── */
+    /* On mobile, panel becomes a bottom sheet */
+    @media (max-width: 640px) {
+      #panel {
+        top: auto; left: 0; right: 0; width: 100%;
+        border-left: none; border-top: 0.5px solid var(--border-light);
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        height: 310px;
+        bottom: -310px; /* hidden by default */
+        transition: bottom 0.3s ease;
+        box-shadow: 0 -4px 24px rgba(0,0,0,0.12);
+      }
+      #panel.open { bottom: 0; }
+      /* map shrinks to make room */
+      #map { transition: bottom 0.3s ease; }
+      #map.panel-open { bottom: 310px; }
+
+      /* drag handle */
+      #drag-handle {
+        display: flex; justify-content: center; padding: 10px 0 4px;
+        cursor: pointer; flex-shrink: 0;
+      }
+      #drag-handle::before {
+        content: ''; display: block; width: 36px; height: 4px;
+        background: var(--border-mid); border-radius: 2px;
+      }
+    }
+    @media (min-width: 641px) {
+      #drag-handle { display: none; }
+      /* map leaves room for side panel */
+      #map { right: 280px; bottom: 0 !important; }
+    }
+
+    /* ── WORD PILL (map overlay, mobile) ── */
+    #word-pill {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: var(--bg-primary); border: 1.5px solid var(--green);
+      border-radius: 999px; padding: 10px 20px;
+      font-size: 18px; font-weight: 700; color: var(--green); letter-spacing: -0.3px;
+      cursor: pointer; z-index: 400;
+      display: none; align-items: center; gap: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.14);
+      white-space: nowrap;
+      transition: bottom 0.3s ease;
+    }
+    #word-pill i { font-size: 15px; color: var(--green-dark); }
+    @media (max-width: 640px) {
+      #word-pill { display: flex; }
+      #word-pill.panel-open { bottom: 326px; }
+    }
+
+    /* ── TABS ── */
+    #tabs { display: flex; border-bottom: 0.5px solid var(--border-light); flex-shrink: 0; }
+    .tab-btn {
+      flex: 1; padding: 10px 0; font-size: 12px; font-weight: 500; background: none;
+      border: none; border-bottom: 2px solid transparent; margin-bottom: -0.5px;
+      cursor: pointer; color: var(--text-secondary);
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+    }
+    .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+
+    .tab-pane { display: none; flex: 1; overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
+    .tab-pane.active { display: flex; flex-direction: column; gap: 14px; }
+
+    .pane-label { font-size: 10px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 6px; }
+
+    /* location tab */
+    .word-display {
+      font-size: 24px; font-weight: 700; color: var(--green); letter-spacing: -0.4px;
+      padding: 11px 13px; background: var(--green-light); border-radius: var(--radius-md);
+      border: 0.5px solid var(--green-border); cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .word-display:active { background: var(--green-border); }
+    .word-display i { font-size: 15px; color: var(--green-dark); flex-shrink: 0; }
+    .word-empty { font-size: 13px; color: var(--text-secondary); line-height: 1.65; }
+    .coord-row { display: flex; gap: 7px; }
+    .coord-chip {
+      flex: 1; padding: 8px 9px; background: var(--bg-secondary);
+      border: 0.5px solid var(--border-light); border-radius: var(--radius-md);
+      font-size: 11px; color: var(--text-secondary);
+    }
+    .coord-chip span { display: block; font-size: 13px; font-weight: 500; color: var(--text-primary); margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .action-btn {
+      width: 100%; padding: 9px; font-size: 13px; font-weight: 500;
+      background: var(--bg-primary); border: 0.5px solid var(--border-mid);
+      border-radius: var(--radius-md); cursor: pointer; color: var(--text-primary);
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .action-btn:active { background: var(--bg-secondary); }
+
+    /* info tab */
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .info-chip { padding: 8px 9px; background: var(--bg-secondary); border: 0.5px solid var(--border-light); border-radius: var(--radius-md); }
+    .info-chip .ic-label { font-size: 10px; color: var(--text-secondary); }
+    .info-chip .ic-val { font-size: 12px; font-weight: 500; color: var(--text-primary); margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .info-divider { border: none; border-top: 0.5px solid var(--border-light); }
+    .cell-id-chip { padding: 8px 10px; background: var(--bg-secondary); border: 0.5px solid var(--border-light); border-radius: var(--radius-md); font-size: 11px; color: var(--text-secondary); }
+    .cell-id-chip span { display: block; font-size: 12px; font-weight: 500; color: var(--text-primary); margin-top: 2px; font-family: 'Courier New', monospace; }
+
+    /* about tab */
+    .about-block { font-size: 12px; color: var(--text-secondary); line-height: 1.7; padding: 10px 12px; background: var(--bg-secondary); border-radius: var(--radius-md); }
+    .about-block strong { color: var(--text-primary); font-weight: 600; }
+    .about-block a { color: var(--green); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<div id="topbar">
+  <div id="logo"><i class="ti ti-map-pin"></i>one<span class="dot">.</span>word</div>
+  <div id="search-wrap">
+    <i class="ti ti-search"></i>
+    <input id="searchInput" placeholder="Search a word…" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="none" />
+  </div>
+  <button id="locate-btn"><i class="ti ti-current-location"></i><span id="locate-label">My location</span></button>
+</div>
+
+<div id="map"></div>
+
+<!-- Floating word pill — mobile only, tap to open panel -->
+<div id="word-pill" aria-label="Tap to see details">
+  <span id="pillWord">—</span>
+  <i class="ti ti-chevron-up"></i>
+</div>
+
+<div id="panel">
+  <div id="drag-handle" role="button" aria-label="Toggle panel"></div>
+  <div id="tabs">
+    <button class="tab-btn active" data-tab="location"><i class="ti ti-map-pin"></i>Location</button>
+    <button class="tab-btn" data-tab="info"><i class="ti ti-info-circle"></i>Cell info</button>
+    <button class="tab-btn" data-tab="about"><i class="ti ti-book"></i>About</button>
+  </div>
+
+  <!-- Location tab -->
+  <div class="tab-pane active" id="tab-location">
+    <div>
+      <div class="pane-label">Word address</div>
+      <div id="wordDisplay" class="word-display" title="Click to copy" style="display:none">
+        <span id="wordText"></span>
+        <i class="ti ti-copy"></i>
+      </div>
+      <div id="wordEmpty" class="word-empty">Tap anywhere on the map to get its one-word address.</div>
+    </div>
+    <div id="coordSection" style="display:none">
+      <div class="pane-label">Cell centre</div>
+      <div class="coord-row">
+        <div class="coord-chip">Lat<span id="dispLat">—</span></div>
+        <div class="coord-chip">Lng<span id="dispLng">—</span></div>
+      </div>
+    </div>
+    <div id="shareSection" style="display:none">
+      <button class="action-btn" id="share-btn"><i class="ti ti-share"></i>Share this location</button>
+    </div>
+  </div>
+
+  <!-- Cell info tab -->
+  <div class="tab-pane" id="tab-info">
+    <div>
+      <div class="pane-label">This cell</div>
+      <div class="info-grid">
+        <div class="info-chip"><div class="ic-label">Word</div><div class="ic-val" id="infoWord">—</div></div>
+        <div class="info-chip"><div class="ic-label">Word index</div><div class="ic-val" id="infoIdx">—</div></div>
+        <div class="info-chip"><div class="ic-label">Cell col (X)</div><div class="ic-val" id="infoCX">—</div></div>
+        <div class="info-chip"><div class="ic-label">Cell row (Y)</div><div class="ic-val" id="infoCY">—</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="pane-label">Cell bounds</div>
+      <div class="info-grid">
+        <div class="info-chip"><div class="ic-label">North</div><div class="ic-val" id="bN">—</div></div>
+        <div class="info-chip"><div class="ic-label">South</div><div class="ic-val" id="bS">—</div></div>
+        <div class="info-chip"><div class="ic-label">East</div><div class="ic-val" id="bE">—</div></div>
+        <div class="info-chip"><div class="ic-label">West</div><div class="ic-val" id="bW">—</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="pane-label">Cell ID</div>
+      <div class="cell-id-chip">Grid reference<span id="infoRef">—</span></div>
+    </div>
+    <hr class="info-divider" />
+    <div>
+      <div class="pane-label">Global grid</div>
+      <div class="info-grid">
+        <div class="info-chip"><div class="ic-label">Cell size</div><div class="ic-val">~1.2 × 1.2 km</div></div>
+        <div class="info-chip"><div class="ic-label">Cell area</div><div class="ic-val">~1.44 km²</div></div>
+        <div class="info-chip"><div class="ic-label">Total cells</div><div class="ic-val">~500M</div></div>
+        <div class="info-chip"><div class="ic-label">Word bank</div><div class="ic-val">171,476</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- About tab -->
+  <div class="tab-pane" id="tab-about">
+    <div class="about-block"><strong>one.word</strong> gives every 1.2 km × 1.2 km square on Earth a unique single-word address drawn from a bank of 171,476 English words.</div>
+    <div class="about-block"><strong>Why 1.2 km cells?</strong><br/>what3words uses 3-word combos (~64 trillion cells at 3 m). With one word your vocabulary size caps cell count — 171,476 words means each cell covers ~1.44 km² to tile the globe without collisions.</div>
+    <div class="about-block"><strong>How it works</strong><br/>A fast integer hash of each cell's (column, row) coordinates maps deterministically to a word index — no database, always the same result.</div>
+    <div class="about-block">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div>
+  </div>
+</div>
+
+<div id="copied-toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const CELL_DEG = 1.2 / 111.0;
+
+  /* ── Word bank ── */
+  const WORDS = (function () {
+    const seed = [
+      "able","about","above","absent","absorb","abstract","accept","access","accord","account",
+      "accurate","achieve","acid","action","active","actual","adapt","address","adopt","adult",
+      "advance","afford","afraid","after","again","against","agent","agree","ahead","alarm",
+      "album","alert","allow","alpha","alter","always","amber","ample","anchor","ancient",
+      "animal","annual","answer","apart","apple","apply","area","argue","arise","army",
+      "around","arrive","article","aspect","assist","assume","attach","attempt","attend","attract",
+      "audit","avoid","award","aware","awful","azure","bacon","badge","balance","bamboo",
+      "banner","barrel","basket","battle","beacon","beach","beard","beast","beauty","become",
+      "begin","belief","belong","bench","beyond","birch","black","blade","blame","blank",
+      "blast","blaze","bleak","blend","bless","block","bloom","blossom","board","bonus",
+      "boost","border","bound","branch","brave","bread","break","bridge","brief","bright",
+      "broad","brown","build","burst","cabin","cable","cadence","camel","candle","canyon",
+      "capital","carbon","career","carpet","castle","casual","cause","cedar","central","chain",
+      "chalk","chance","change","charge","chart","chase","check","cheer","chest","chief",
+      "chill","choice","chord","claim","class","clean","clear","climb","clock","close",
+      "cloud","coast","cobalt","coffee","comet","common","coral","corner","count","cover",
+      "crane","crash","cream","creek","crisp","cross","crowd","crown","crude","crush",
+      "curve","cycle","daily","dance","daring","dawn","debate","decay","deep","define",
+      "dense","desert","detail","direct","drift","drive","eagle","earthy","echo","edge",
+      "eight","elder","eleven","embark","empire","enable","entire","equal","event","every",
+      "exact","exist","extra","fable","factor","faith","falcon","familiar","famous","fancy",
+      "fender","field","fight","final","first","fixed","flame","flat","fleet","float",
+      "flood","fluid","focus","force","forge","forward","fossil","found","fragile","frame",
+      "frank","fresh","frost","front","fruit","fulcrum","fuzzy","galaxy","garden","gather",
+      "gauge","gavel","gentle","giant","given","glacier","glade","gleam","glide","global",
+      "gloom","glory","golden","grace","grand","grant","grape","grasp","grass","gravel",
+      "great","green","greet","grove","guard","guide","gulch","habit","hardy","harvest",
+      "haven","heavy","hedge","herald","hidden","high","hinge","hollow","honor","horizon",
+      "humble","hunter","ideal","image","impact","inner","input","irony","island","italic",
+      "ivory","jade","jewel","jolly","judge","jungle","kayak","kindle","knack","knight",
+      "label","lacquer","laden","lance","large","laser","last","latch","layer","lemon",
+      "level","light","limit","linear","liquid","logic","loyal","lunar","luster","major",
+      "maple","marble","margin","marsh","marvel","matrix","merit","might","minor","mirror",
+      "model","moist","monarch","mossy","mount","muscle","mystic","native","navel","nearby",
+      "noble","notch","novel","nurture","observe","ocean","offset","olive","open","order",
+      "origin","outer","outlet","outpost","output","oxide","pacific","panel","paper","parallel",
+      "pardon","patch","patient","patrol","pattern","peace","petal","pilot","pitch","pixel",
+      "plain","planet","plasma","pledge","polar","portal","power","practice","precise","prism",
+      "protect","proud","proven","pulse","pure","quartz","quiet","radiant","range","rapid",
+      "raven","reach","realm","reason","record","reedy","refine","refuge","relay","remote",
+      "render","renew","reset","resilient","restore","reveal","ridge","right","rigid","ripple",
+      "rival","robust","rocket","rocky","roost","rough","round","royal","rudder","rugged",
+      "rustic","sacred","salmon","sample","scale","scout","secure","select","sense","serene",
+      "settle","shade","shadow","sharp","shift","shore","signal","silent","silver","simple",
+      "single","sketch","slate","sleek","slope","snowy","solar","solid","solve","sonic",
+      "sparse","sphere","spirit","splash","stable","stack","steady","stem","stony","storm",
+      "stream","strong","summit","sunrise","sunset","surge","swift","tablet","talon","tangle",
+      "tartan","temple","tender","thermal","thorn","tide","timber","torch","tower","trace",
+      "trail","transform","trench","trial","trigger","tropical","trust","truth","tunnel","turbo",
+      "tundra","uplift","urban","valley","value","vapor","vast","vector","vessel","vibrant",
+      "vision","vivid","vocal","voyage","warmth","wary","watch","water","weave","welcome",
+      "wildfire","willow","windy","wisdom","wonder","woodland","world","worthy","zenith"
+    ];
+    const prefixes = ["ultra","super","hyper","mega","micro","nano","eco","geo","bio","hydro","pyro","cryo","astro","aero","deep","high","low","mid","far","near","old","new","wild","bright","dark","swift","slow","raw","pure","grand","true","bold","vast","sharp","soft","clear","long","short","wide","lean","full","half","twin","tri","quad","dual","prime","core","base","edge","peak","arch","over","under","sub","pre","pro","neo","meta","poly","mono","omni","semi","auto","self"];
+    const suffixes = ["land","wood","field","ridge","brook","vale","moor","cliff","gate","ford","well","lake","shore","peak","mere","grove","holm","burn","beck","lea","fen","dale","wold","mark","wick","bury","ton","ham","stead","croft","barrow","heath","marsh","stow","hurst","thwaite","shaw","ing","fold","knoll","down","hollow","meadow","combe","scar","slack","raise","force","ghyll","sike","clough","dingle","nook","copse","glade","bower","spinney","covert","thicket","sedge","ling","gorse","broom","rush","reed","thorn","briar","brake","knap","holt","whin","furze","moss","bog","carr","hag"];
+    const bank = new Set(seed);
+    for (const p of prefixes) { for (const w of seed) { if (bank.size >= 171476) break; const c = p+w; if (c.length >= 4 && c.length <= 12) bank.add(c); } if (bank.size >= 171476) break; }
+    for (const s of suffixes) { for (const w of seed) { if (bank.size >= 171476) break; const c = w+s; if (c.length >= 4 && c.length <= 14) bank.add(c); } if (bank.size >= 171476) break; }
+    for (const a of seed) { for (const b of seed) { if (bank.size >= 171476) break; if (a !== b) { const c = a+b; if (c.length >= 6 && c.length <= 13) bank.add(c); } } if (bank.size >= 171476) break; }
+    return Array.from(bank).slice(0, 171476);
+  })();
+
+  /* ── Helpers ── */
+  function hashCell(cx, cy) {
+    let h = (cx * 2654435761) ^ (cy * 2246822519);
+    h = ((h >>> 16) ^ h) * 0x45d9f3b;
+    h = ((h >>> 16) ^ h) * 0x45d9f3b;
+    h = (h >>> 16) ^ h;
+    return ((h % WORDS.length) + WORDS.length) % WORDS.length;
+  }
+  function latLngToCell(lat, lng) { return { cx: Math.floor(lng / CELL_DEG), cy: Math.floor(lat / CELL_DEG) }; }
+  function cellBounds(cx, cy) { return { south: cy*CELL_DEG, north: (cy+1)*CELL_DEG, west: cx*CELL_DEG, east: (cx+1)*CELL_DEG }; }
+
+  /* ── Map ── */
+  const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19
+  }).addTo(map);
+
+  let currentRect = null, currentMarker = null;
+  const isMobile = () => window.innerWidth <= 640;
+
+  /* ── Toast ── */
+  function showToast(msg) {
+    const t = document.getElementById('copied-toast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2000);
+  }
+
+  /* ── Mobile panel open/close ── */
+  const panel = document.getElementById('panel');
+  const mapEl = document.getElementById('map');
+  const pill  = document.getElementById('word-pill');
+  let panelOpen = false;
+
+  function openPanel() {
+    panelOpen = true;
+    panel.classList.add('open');
+    mapEl.classList.add('panel-open');
+    pill.classList.add('panel-open');
+    // update chevron
+    pill.querySelector('i').className = 'ti ti-chevron-down';
+    setTimeout(() => map.invalidateSize(), 310);
+  }
+  function closePanel() {
+    panelOpen = false;
+    panel.classList.remove('open');
+    mapEl.classList.remove('panel-open');
+    pill.classList.remove('panel-open');
+    pill.querySelector('i').className = 'ti ti-chevron-up';
+    setTimeout(() => map.invalidateSize(), 310);
+  }
+  function togglePanel() { panelOpen ? closePanel() : openPanel(); }
+
+  document.getElementById('drag-handle').addEventListener('click', togglePanel);
+  pill.addEventListener('click', togglePanel);
+
+  /* ── Highlight cell ── */
+  function highlightCell(lat, lng, skipPan) {
+    const { cx, cy } = latLngToCell(lat, lng);
+    const idx = hashCell(cx, cy);
+    const word = WORDS[idx];
+    const b = cellBounds(cx, cy);
+    const cLat = (b.south + b.north) / 2;
+    const cLng = (b.west + b.east) / 2;
+
+    if (currentRect) map.removeLayer(currentRect);
+    if (currentMarker) map.removeLayer(currentMarker);
+
+    currentRect = L.rectangle([[b.south, b.west], [b.north, b.east]], {
+      color: '#1D9E75', weight: 2, fillColor: '#1D9E75', fillOpacity: 0.18
+    }).addTo(map);
+
+    if (!isMobile()) {
+      currentMarker = L.popup({ closeButton: false, offset: [0, -4] })
+        .setLatLng([cLat, cLng])
+        .setContent(`<div style="font-family:system-ui,sans-serif;padding:2px 4px"><div style="font-size:17px;font-weight:700;color:#0F6E56">${word}</div><div style="font-size:11px;color:#888;margin-top:2px">${cLat.toFixed(4)}, ${cLng.toFixed(4)}</div></div>`)
+        .openOn(map);
+    }
+
+    // Update pill
+    document.getElementById('pillWord').textContent = word;
+
+    // Location tab
+    document.getElementById('wordDisplay').style.display = 'flex';
+    document.getElementById('wordEmpty').style.display = 'none';
+    document.getElementById('coordSection').style.display = 'block';
+    document.getElementById('shareSection').style.display = 'block';
+    document.getElementById('wordText').textContent = word;
+    document.getElementById('dispLat').textContent = cLat.toFixed(5);
+    document.getElementById('dispLng').textContent = cLng.toFixed(5);
+
+    // Info tab
+    document.getElementById('infoWord').textContent = word;
+    document.getElementById('infoIdx').textContent = idx.toLocaleString();
+    document.getElementById('infoCX').textContent = cx;
+    document.getElementById('infoCY').textContent = cy;
+    document.getElementById('bN').textContent = b.north.toFixed(4) + '°';
+    document.getElementById('bS').textContent = b.south.toFixed(4) + '°';
+    document.getElementById('bE').textContent = b.east.toFixed(4) + '°';
+    document.getElementById('bW').textContent = b.west.toFixed(4) + '°';
+    document.getElementById('infoRef').textContent = `X${cx} Y${cy}`;
+
+    // Update URL without reloading
+    const url = new URL(window.location.href);
+    url.searchParams.set('w', word);
+    window.history.replaceState(null, '', url.toString());
+  }
+
+  /* ── Map click ── */
+  map.on('click', e => {
+    highlightCell(e.latlng.lat, e.latlng.lng);
+    if (isMobile() && !panelOpen) openPanel();
+  });
+
+  /* ── Geolocation ── */
+  document.getElementById('locate-btn').addEventListener('click', () => {
+    if (!navigator.geolocation) { showToast('Geolocation not supported'); return; }
+    navigator.geolocation.getCurrentPosition(p => {
+      map.setView([p.coords.latitude, p.coords.longitude], 14);
+      highlightCell(p.coords.latitude, p.coords.longitude);
+      if (isMobile() && !panelOpen) openPanel();
+    }, () => showToast('Location unavailable'));
+  });
+
+  /* ── Copy word ── */
+  document.getElementById('wordDisplay').addEventListener('click', () => {
+    const w = document.getElementById('wordText').textContent;
+    navigator.clipboard.writeText(w).catch(() => {});
+    showToast(`"${w}" copied!`);
+  });
+
+  /* ── Share — copies a URL that resolves to this word ── */
+  document.getElementById('share-btn').addEventListener('click', () => {
+    const w = document.getElementById('wordText').textContent;
+    if (!w) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('w', w);
+    // remove any stale params
+    const shareUrl = url.toString();
+    navigator.clipboard.writeText(shareUrl).catch(() => {});
+    showToast('Link copied!');
+  });
+
+  /* ── Word search ── */
+  const searchInput = document.getElementById('searchInput');
+  function goToWord(q) {
+    q = q.trim().toLowerCase();
+    if (!q) return false;
+    const idx = WORDS.indexOf(q);
+    if (idx === -1) return false;
+    const lim = Math.round(180 / CELL_DEG);
+    const latLim = Math.round(90 / CELL_DEG);
+    for (let cy = -latLim; cy < latLim; cy++) {
+      for (let cx = -lim; cx < lim; cx++) {
+        if (hashCell(cx, cy) === idx) {
+          const b = cellBounds(cx, cy);
+          const cLat = (b.south + b.north) / 2;
+          const cLng = (b.west + b.east) / 2;
+          map.setView([cLat, cLng], 13);
+          highlightCell(cLat, cLng);
+          if (isMobile() && !panelOpen) openPanel();
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  searchInput.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    const ok = goToWord(this.value);
+    if (!ok) {
+      this.classList.add('error');
+      showToast(`"${this.value.trim()}" not found`);
+      setTimeout(() => this.classList.remove('error'), 1200);
+    } else {
+      this.classList.remove('error');
+      this.blur();
+    }
+  });
+
+  /* ── Tabs ── */
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  /* ── Deep-link: ?w=word ── */
+  const params = new URLSearchParams(window.location.search);
+  const deepWord = params.get('w');
+  if (deepWord && goToWord(deepWord)) {
+    // zoomed to word's location already
+    if (isMobile()) openPanel();
+  } else {
+    // Default: London
+    highlightCell(51.5007, -0.1246);
+    map.setView([51.5007, -0.1246], 13);
+  }
+
+})();
+</script>
+</body>
+</html>
